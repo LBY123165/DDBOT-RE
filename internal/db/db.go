@@ -1,0 +1,104 @@
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/cnxysoft/DDBOT-WSa/internal/logger"
+	_ "modernc.org/sqlite"
+)
+
+var (
+	// DB 全局数据库实例
+	DB *sql.DB
+)
+
+// Init 初始化数据库
+func Init() error {
+	// 确保 data 目录存在
+	dataDir := "./data"
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("创建数据目录失败：%v", err)
+	}
+
+	// 数据库文件路径
+	dbPath := filepath.Join(dataDir, "ddbot.db")
+
+	logger.Infof("正在初始化数据库：%s", dbPath)
+
+	// 打开数据库连接（modernc.org/sqlite 驱动名为 "sqlite"，纯 Go，无需 CGO）
+	var err error
+	DB, err = sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("打开数据库失败：%v", err)
+	}
+
+	// modernc sqlite 建议单连接（WAL 模式下也可多连接，但并发写不高时单连接更稳定）
+	DB.SetMaxOpenConns(1)
+	DB.SetMaxIdleConns(1)
+
+	// 测试连接
+	if err := DB.Ping(); err != nil {
+		return fmt.Errorf("连接数据库失败：%v", err)
+	}
+
+	// 开启 WAL 模式（提升并发读性能）和外键约束
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL;",
+		"PRAGMA foreign_keys=ON;",
+		"PRAGMA synchronous=NORMAL;",
+	}
+	for _, p := range pragmas {
+		if _, err := DB.Exec(p); err != nil {
+			logger.Warnf("执行 PRAGMA 失败 (%s): %v", p, err)
+		}
+	}
+
+	logger.Info("数据库初始化成功")
+	return nil
+}
+
+// Close 关闭数据库连接
+func Close() error {
+	if DB != nil {
+		logger.Info("正在关闭数据库连接")
+		return DB.Close()
+	}
+	return nil
+}
+
+// Exec 执行 SQL 语句（不返回结果）
+func Exec(query string, args ...interface{}) (sql.Result, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("数据库未初始化")
+	}
+	return DB.Exec(query, args...)
+}
+
+// Query 查询 SQL（返回多行结果）
+func Query(query string, args ...interface{}) (*sql.Rows, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("数据库未初始化")
+	}
+	return DB.Query(query, args...)
+}
+
+// QueryRow 查询 SQL（返回单行结果）
+// 注意：若 DB 未初始化，会 panic（数据库初始化是启动的必要前提，
+// 在正常启动流程中 DB 不可能为 nil，此处 panic 是合理的 fail-fast 策略）。
+func QueryRow(query string, args ...interface{}) *sql.Row {
+	if DB == nil {
+		panic("db.QueryRow: 数据库未初始化，请检查启动流程")
+	}
+	return DB.QueryRow(query, args...)
+}
+
+// BeginTx 开始事务
+func BeginTx() (*sql.Tx, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("数据库未初始化")
+	}
+	return DB.Begin()
+}
